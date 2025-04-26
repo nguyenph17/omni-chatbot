@@ -19,8 +19,7 @@ from datetime import datetime, timezone
 from itertools import chain
 from pprint import pformat
 import traceback
-from typing import Optional, Sequence, cast
-from croniter import croniter
+from typing import Optional, Sequence, cast, Dict, List, Any
 from typing_extensions import override
 
 from parlant.core.agents import Agent, AgentId, CompositionMode
@@ -74,8 +73,8 @@ from parlant.core.tags import Tag
 from parlant.core.tools import ToolContext, ToolId
 
 
-class AlphaEngine(Engine):
-    """The main AI processing engine (as of Feb 25, the latest and greatest processing engine)"""
+class BetaEngine(Engine):
+    """A simplified engine that processes without emitting events and returns the agent response directly"""
 
     def __init__(
         self,
@@ -109,30 +108,26 @@ class AlphaEngine(Engine):
         self,
         context: Context,
         event_emitter: EventEmitter,
-    ) -> bool:
-        """Processes a context and emits new events as needed"""
-
+    ) -> str:
+        """Processes a context and returns the agent response directly without emitting events"""
         # Load the full relevant information from storage.
         loaded_context = await self._load_context(context, event_emitter)
 
         try:
             with self._logger.operation(f"Processing context for session {context.session_id}"):
-                await self._do_process(loaded_context, event_emitter)
-            return True
-        except asyncio.CancelledError:
-            return False
+                response = await self._do_process(loaded_context)
+                # Return the response directly
+                return response
+        except asyncio.CancelledError as e:
+            self._logger.warning(f"Processing cancelled: {e}")
+            raise Exception(f"Processing cancelled. Error: {e}")
         except Exception as exc:
             formatted_exception = pformat(traceback.format_exception(exc))
-
             self._logger.error(f"Processing error: {formatted_exception}")
-
-            if await self._hooks.call_on_error(loaded_context, exc):
-                await self._emit_error_event(loaded_context, formatted_exception)
-
-            return False
+            raise Exception(f"Processing error. Error: {exc}")
         except BaseException as exc:
             self._logger.critical(f"Critical processing error: {traceback.format_exception(exc)}")
-            raise
+            raise Exception(f"Critical processing error. Error: {exc}")
 
     @override
     async def utter(
@@ -141,8 +136,7 @@ class AlphaEngine(Engine):
         event_emitter: EventEmitter,
         requests: Sequence[UtteranceRequest],
     ) -> bool:
-        """Produces a new message into a session, guided by specific utterance requests"""
-
+        """Produces a response directly without emitting events"""
         # Load the full relevant information from storage.
         loaded_context = await self._load_context(
             context,
@@ -154,21 +148,17 @@ class AlphaEngine(Engine):
 
         try:
             with self._logger.operation(f"Uttering in session {context.session_id}"):
-                await self._do_utter(loaded_context, requests)
-            return True
+                response = await self._do_utter(loaded_context, requests)
+                # Return the response directly
+                return response
         except asyncio.CancelledError:
             self._logger.warning(f"Uttering in session {context.session_id} was cancelled.")
             return False
         except Exception as exc:
             formatted_exception = pformat(traceback.format_exception(exc))
-
             self._logger.error(
                 f"Error during uttering in session {context.session_id}: {formatted_exception}"
             )
-
-            if await self._hooks.call_on_error(loaded_context, exc):
-                await self._emit_error_event(loaded_context, formatted_exception)
-
             return False
         except BaseException as exc:
             self._logger.critical(
@@ -189,32 +179,14 @@ class AlphaEngine(Engine):
     async def _do_process(
         self,
         context: LoadedContext,
-        event_emitter: EventEmitter,
-    ) -> None:
-        if not await self._hooks.call_on_acknowledging(context):
-            return  # Hook requested to bail out
-
-        # Mark that this latest session state has been seen by the agent.
-        await self._emit_acknowledgement_event(context)
-
-        if not await self._hooks.call_on_acknowledged(context):
-            return  # Hook requested to bail out
-
+    ) -> str:
+        """Process the context and return the agent response directly"""
         try:
-            if not await self._hooks.call_on_preparing(context):
-                return  # Hook requested to bail out
-
             await self._initialize_response_state(context)
             preparation_iteration_inspections = []
 
-            # Mark that the agent is in the process of preparing for a response.
-            await self._emit_processing_event(context)
-
             while not context.state.prepared_to_respond:
                 # Need more data before we're ready to respond
-
-                if not await self._hooks.call_on_preparation_iteration_start(context):
-                    break  # Hook requested to finish preparing
 
                 # Get more data (guidelines, tools, etc.,)
                 # This happens in iterations in order to support a feedback loop
@@ -229,12 +201,6 @@ class AlphaEngine(Engine):
                 # This is particularly important to support human handoff.
                 await self._update_session_mode(context)
 
-                if not await self._hooks.call_on_preparation_iteration_end(context):
-                    break
-
-            if not await self._hooks.call_on_generating_messages(context):
-                return
-
             # Filter missing tool parameters
             context.state.tool_insights = ToolInsights(
                 missing_data=await self._filter_missing_tool_parameters(
@@ -242,8 +208,7 @@ class AlphaEngine(Engine):
                 )
             )
 
-            # Money time: communicate with the customer given
-            # all of the information we have prepared.
+            # Generate messages and return the response directly
             message_generation_inspections = await self._generate_messages(context)
 
             # Save results for later inspection.
@@ -254,7 +219,8 @@ class AlphaEngine(Engine):
                 message_generations=message_generation_inspections,
             )
 
-            await self._hooks.call_on_generated_messages(context)
+            response = message_generation_inspections[-1].messages[0]
+            return response
 
         except asyncio.CancelledError:
             # Task was cancelled. This usually happens for 1 of 2 reasons:
@@ -262,17 +228,20 @@ class AlphaEngine(Engine):
             #   2. New information arrived and the currently loaded
             #      processing context is likely to be obsolete
             self._logger.warning("Processing cancelled")
-            await self._emit_cancellation_event(context)
-            raise
+            raise Exception("Processing cancelled")
+        except Exception as e:
+            self._logger.error(f"Processing error: {e}")
+            raise Exception(f"Processing error. Error: {e}")
         finally:
-            # Mark that the agent is ready to receive and respond to new events.
-            await self._emit_ready_event(context)
+            # No need to emit ready event since we're not using events
+            pass
 
     async def _do_utter(
         self,
         context: LoadedContext,
         requests: Sequence[UtteranceRequest],
-    ) -> None:
+    ) -> str:
+        """Process the context with utterance requests and return the agent response directly"""
         try:
             await self._initialize_response_state(context)
 
@@ -283,24 +252,25 @@ class AlphaEngine(Engine):
                 await self._utterance_requests_to_guideline_matches(requests)
             )
 
-            # Money time: communicate with the customer given the
-            # specified utterance requests.
-            message_generation_inspections = await self._generate_messages(context)
+            # Generate response directly
+            response = await self._generate_response(context)
 
             # Save results for later inspection.
             await self._entity_commands.create_inspection(
                 session_id=context.session.id,
                 correlation_id=self._correlator.correlation_id,
                 preparation_iterations=[],
-                message_generations=message_generation_inspections,
+                message_generations=[],  # We don't need to save message generations since we're not emitting events
             )
+
+            return response
 
         except asyncio.CancelledError:
             self._logger.warning("Uttering cancelled")
-            raise
+            raise Exception("Uttering cancelled")
         finally:
-            # Mark that the agent is ready to receive and respond to new events.
-            await self._emit_ready_event(context)
+            # No need to emit ready event since we're not using events
+            pass
 
     async def _load_context(
         self,
@@ -520,56 +490,6 @@ class AlphaEngine(Engine):
             )
 
         return message_generation_inspections
-
-    async def _emit_error_event(self, context: LoadedContext, exception_details: str) -> None:
-        await context.event_emitter.emit_status_event(
-            correlation_id=self._correlator.correlation_id,
-            data={
-                "status": "error",
-                "acknowledged_offset": context.interaction.last_known_event_offset,
-                "data": {"exception": exception_details},
-            },
-        )
-
-    async def _emit_acknowledgement_event(self, context: LoadedContext) -> None:
-        await context.event_emitter.emit_status_event(
-            correlation_id=self._correlator.correlation_id,
-            data={
-                "acknowledged_offset": context.interaction.last_known_event_offset,
-                "status": "acknowledged",
-                "data": {},
-            },
-        )
-
-    async def _emit_processing_event(self, context: LoadedContext) -> None:
-        await context.event_emitter.emit_status_event(
-            correlation_id=self._correlator.correlation_id,
-            data={
-                "acknowledged_offset": context.interaction.last_known_event_offset,
-                "status": "processing",
-                "data": {},
-            },
-        )
-
-    async def _emit_cancellation_event(self, context: LoadedContext) -> None:
-        await context.event_emitter.emit_status_event(
-            correlation_id=self._correlator.correlation_id,
-            data={
-                "acknowledged_offset": context.interaction.last_known_event_offset,
-                "status": "cancelled",
-                "data": {},
-            },
-        )
-
-    async def _emit_ready_event(self, context: LoadedContext) -> None:
-        await context.event_emitter.emit_status_event(
-            correlation_id=self._correlator.correlation_id,
-            data={
-                "acknowledged_offset": context.interaction.last_known_event_offset,
-                "status": "ready",
-                "data": {},
-            },
-        )
 
     def _get_message_composer(self, agent: Agent) -> MessageEventComposer:
         # Each agent may use a different composition mode,
@@ -812,6 +732,7 @@ class AlphaEngine(Engine):
         variable: ContextVariable,
         key: str,
     ) -> Optional[ContextVariableValue]:
+        from parlant.core.context_variables import load_fresh_context_variable_value
         return await load_fresh_context_variable_value(
             entity_queries=self._entity_queries,
             entity_commands=self._entity_commands,
@@ -829,59 +750,4 @@ class AlphaEngine(Engine):
         if precedence_values == []:
             return missing_parameters
 
-        return [m for m in missing_parameters if m.precedence == min(precedence_values)]
-
-
-# This is module-level and public for isolated testability purposes.
-async def load_fresh_context_variable_value(
-    entity_queries: EntityQueries,
-    entity_commands: EntityCommands,
-    agent_id: AgentId,
-    session: Session,
-    variable: ContextVariable,
-    key: str,
-    current_time: datetime = datetime.now(timezone.utc),
-) -> Optional[ContextVariableValue]:
-    # Load the existing value
-    value = await entity_queries.read_context_variable_value(
-        variable_id=variable.id,
-        key=key,
-    )
-
-    # If there's no tool attached to this variable,
-    # return the value we found for the key.
-    # Note that this may be None here, which is okay.
-    if not variable.tool_id:
-        return value
-
-    # So we do have a tool attached.
-    # Do we already have a value, and is it sufficiently fresh?
-    if value and variable.freshness_rules:
-        cron_iterator = croniter(variable.freshness_rules, value.last_modified)
-
-        if cron_iterator.get_next(datetime) > current_time:
-            # We already have a fresh value in store. Return it.
-            return value
-
-    # We don't have a sufficiently fresh value.
-    # Get an updated one, utilizing the associated tool.
-
-    tool_context = ToolContext(
-        agent_id=agent_id,
-        session_id=session.id,
-        customer_id=session.customer_id,
-    )
-
-    tool_service = await entity_queries.read_tool_service(variable.tool_id.service_name)
-
-    tool_result = await tool_service.call_tool(
-        variable.tool_id.tool_name,
-        context=tool_context,
-        arguments={},
-    )
-
-    return await entity_commands.update_context_variable_value(
-        variable_id=variable.id,
-        key=key,
-        data=tool_result.data,
-    )
+        return [m for m in missing_parameters if m.precedence == min(precedence_values)] 

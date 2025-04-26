@@ -79,7 +79,6 @@ class ToolContext:
             ]
         ] = None,
         plugin_data: Mapping[str, Any] = {},
-        # this plugin data is used to pass data that is required by the plugin and doesn't go through the LLM evaluation
     ) -> None:
         self.agent_id = agent_id
         self.session_id = session_id
@@ -152,7 +151,7 @@ class ToolParameterOptions(DefaultBaseModel):
     choice_provider: Optional[Callable[..., Awaitable[list[str]]]] = Field(
         default=None, exclude=True
     )
-    """A custom function to provide valid choices for the parameter's argument."""
+    """A custom function to provide valid choicoes for the parameter's argument."""
 
     precedence: Optional[int] = Field(default=DEFAULT_PARAMETER_PRECEDENCE)
     """The precedence of this parameter comparing to other parameters. Lower values are higher precedence.
@@ -229,13 +228,6 @@ class ToolService(ABC):
     async def read_tool(
         self,
         name: str,
-    ) -> Tool: ...
-
-    @abstractmethod
-    async def resolve_tool(
-        self,
-        name: str,
-        context: ToolContext,
     ) -> Tool: ...
 
     @abstractmethod
@@ -322,16 +314,6 @@ class LocalToolService(ToolService):
             return self._local_tool_to_tool(self._local_tools_by_name[name])
         except KeyError:
             raise ItemNotFoundError(item_id=UniqueId(name))
-
-    @override
-    async def resolve_tool(
-        self,
-        name: str,
-        context: ToolContext,
-    ) -> Tool:
-        tool = await self.read_tool(name)
-        # Local tools have no plugin_data as plugin servers do, so it simply calls read_tool, no support for choice_provider here.
-        return tool
 
     @override
     async def call_tool(
