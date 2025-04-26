@@ -114,12 +114,6 @@ class ToolEventGenerator:
             self._logger.debug("Skipping tool calling; no tools associated with guidelines found")
             return ToolEventGenerationResult(generations=[], events=[], insights=ToolInsights())
 
-        tool_context = ToolContext(
-            agent_id=agent.id,
-            session_id=session_id,
-            customer_id=customer.id,
-        )
-
         inference_result = await self.tool_caller.infer_tool_calls(
             agent,
             context_variables,
@@ -128,7 +122,6 @@ class ToolEventGenerator:
             ordinary_guideline_matches,
             tool_enabled_guideline_matches,
             staged_events,
-            tool_context,
         )
 
         tool_calls = list(chain.from_iterable(inference_result.batches))
@@ -141,7 +134,11 @@ class ToolEventGenerator:
             )
 
         tool_results = await self.tool_caller.execute_tool_calls(
-            tool_context,
+            ToolContext(
+                agent_id=agent.id,
+                session_id=session_id,
+                customer_id=customer.id,
+            ),
             tool_calls,
         )
 

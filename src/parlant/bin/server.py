@@ -31,6 +31,11 @@ from pathlib import Path
 import sys
 import uvicorn
 
+import sys
+import os
+
+sys.path.append(os.getcwd() + "/src")
+
 from parlant.bin.prepare_migration import detect_required_migrations
 from parlant.adapters.loggers.websocket import WebSocketLogger
 from parlant.adapters.vector_db.chroma import ChromaDatabase
@@ -40,11 +45,10 @@ from parlant.core.engines.alpha import message_generator
 from parlant.core.engines.alpha.hooks import EngineHooks
 from parlant.core.engines.alpha.relational_guideline_resolver import RelationalGuidelineResolver
 from parlant.core.engines.alpha.utterance_selector import (
-    UtteranceDraftSchema,
     UtteranceFieldExtractionSchema,
     UtteranceFieldExtractor,
     UtteranceSelectionSchema,
-    UtteranceRevisionSchema,
+    UtteranceCompositionSchema,
     UtteranceSelector,
 )
 from parlant.core.utterances import UtteranceDocumentStore, UtteranceStore
@@ -91,6 +95,7 @@ from parlant.core.sessions import (
 )
 from parlant.core.glossary import GlossaryStore, GlossaryVectorStore
 from parlant.core.engines.alpha.engine import AlphaEngine
+from parlant.core.engines.beta.engine import BetaEngine
 from parlant.core.guideline_tool_associations import (
     GuidelineToolAssociationDocumentStore,
     GuidelineToolAssociationStore,
@@ -309,6 +314,7 @@ async def setup_container() -> AsyncIterator[Container]:
     c[EntityCommands] = Singleton(EntityCommands)
 
     c[Engine] = Singleton(AlphaEngine)
+    c[BetaEngine] = Singleton(BetaEngine)
     c[Application] = lambda rc: Application(rc)
 
     yield c
@@ -453,14 +459,11 @@ async def initialize_container(
         SchematicGenerator[GenericGuidelineMatchesSchema]
     ] = await nlp_service.get_schematic_generator(GenericGuidelineMatchesSchema)
     c[SchematicGenerator[MessageSchema]] = await nlp_service.get_schematic_generator(MessageSchema)
-    c[SchematicGenerator[UtteranceDraftSchema]] = await nlp_service.get_schematic_generator(
-        UtteranceDraftSchema
-    )
     c[SchematicGenerator[UtteranceSelectionSchema]] = await nlp_service.get_schematic_generator(
         UtteranceSelectionSchema
     )
-    c[SchematicGenerator[UtteranceRevisionSchema]] = await nlp_service.get_schematic_generator(
-        UtteranceRevisionSchema
+    c[SchematicGenerator[UtteranceCompositionSchema]] = await nlp_service.get_schematic_generator(
+        UtteranceCompositionSchema
     )
     c[
         SchematicGenerator[UtteranceFieldExtractionSchema]
